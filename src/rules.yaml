@@ -1,0 +1,24 @@
+- action: alert
+  msg: "SSH traffic detected"
+  protocol: tcp # A specific protocol
+  dest_port: 22
+
+- action: alert
+  msg: "Potential DNS exfiltration attempt"
+  protocol: udp
+  dest_port: 53
+
+- action: alert
+  msg: "Traffic to known suspicious IP"
+  dest_ip: "192.51.100.10" # A specific destination IP
+
+- action: alert
+  msg: :"Any traffic from a specific internal server"
+  source_ip: "192.168.1.50" # Match any protocol or port from this IP
+
+# --- New rule for Layer 7 DNS content ---
+- action: alert
+  msg: "ALERT: Query to known malicious C2 domain detected"
+  protocol: udp
+  dest_port: 53
+  dns_query: "evil-c2-server.com"

@@ -1,0 +1,15 @@
+[package]
+name = "nids_v1"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+config = "0.15.13"
+crossbeam-channel = "0.5.15"
+env_logger = "0.11.8"
+log = "0.4.27"
+pcap = "2.2.0"
+pnet_packet = "0.35.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_yaml = "0.9.34"
+trust-dns-proto = "0.23.2"

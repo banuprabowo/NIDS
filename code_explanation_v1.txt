@@ -1,0 +1,114 @@
+# NIDS Architecture & Code Explanation Log
+
+This document provides a detailed, file-by-file analysis of the Network Intrusion Detection System (NIDS) project.
+
+---
+### **File: `main.rs`**
+
+* **Purpose:** The main entry point and orchestrator of the application. This is the user-facing component that runs when you execute `cargo run`.
+
+* **Responsibilities:**
+    1.  **Initialization:** Starts the application.
+    2.  **Rule Loading:** Reads the `rules.yaml` file from the disk and uses `serde_yaml` to deserialize it into a vector of `Rule` structs (`Vec<Rule>`).
+    3.  **Device Discovery:** Calls the library function `list_devices()` to get a list of available network interfaces.
+    4.  **User Interaction:** Presents the list of devices to the user and handles input for selecting which device to monitor. Includes robust error handling for invalid input.
+    5.  **Capture Initiation:** Calls the library function `start_capture()`, passing it the name of the selected device and a *closure*.
+
+* **Key Logic & Relationships:**
+    * The most important part of `main.rs` is the closure passed to `start_capture`.
+        ```rust
+        start_capture(&selected_device.name, move |ethernet_packet| {
+            // ... logic inside the closure ...
+        })?;
+        ```
+    * The `move` keyword gives the closure ownership of the `rules` vector. This is necessary because the closure will live for the duration of the capture, and it needs its own copy of the rules to work with.
+    * Inside the closure, the data flows from the `capture` module to the `parser` module, and the result is then checked against the `rules` module. This is where all the components of your library are tied together.
+
+* **Expected Output:**
+    * A list of network devices for the user to choose from.
+    * A message confirming how many rules were loaded (e.g., `Successfully loaded 4 rules.`).
+    * A confirmation that capturing has started (e.g., `Starting capture on eth0...`).
+    * Real-time alert messages printed to the console whenever a packet matches a rule.
+
+---
+### **File: `lib.rs`**
+
+* **Purpose:** The "blueprint" or public API of your NIDS library. It defines the boundary between your core logic and any application that might use it (in this case, `main.rs`).
+
+* **Responsibilities:**
+    1.  **Module Declaration:** Uses `mod capture;`, `mod parser;`, and `mod rules;` to tell the Rust compiler that these files are part of the library crate.
+    2.  **API Exposition:** Uses `pub use ...` to make specific functions and structs from the internal modules publicly available. This creates a clean, intentional API. Anything not `pub use`d here is considered a private implementation detail of the library.
+
+* **Key Logic & Relationships:**
+    * This file is purely structural. It doesn't contain any logic itself but acts as the central hub that connects all the other modules and makes them accessible to the outside world (i.e., `main.rs`).
+
+---
+### **File: `capture.rs`**
+
+* **Purpose:** To interface with the system's network hardware and capture raw network packets.
+
+* **Responsibilities:**
+    1.  **Device Listing:** Contains `list_devices()`, which uses the `pcap` crate to find all available network interfaces.
+    2.  **Packet Sniffing:** Contains `start_capture()`, which opens a handle to a specific network device in promiscuous mode (to see all traffic, not just traffic addressed to it). It then enters a loop, grabbing packets one by one.
+
+* **Key Logic & Relationships:**
+    * The `start_capture` function is cleverly decoupled from the rest of the system. It takes a generic closure (`F: FnMut(&EthernetPacket)`) as a callback.
+    * This means `capture.rs` has **no knowledge** of the parser or the rule engine. Its only job is to capture a packet and hand it off to whatever function it was given. For each valid packet it captures, it calls `callback(&ethernet_packet)`. This makes the module highly reusable.
+
+---
+### **File: `parser.rs`**
+
+* **Purpose:** To translate the raw, meaningless bytes of a packet into a structured, meaningful format that the rest of the application can easily use.
+
+* **Responsibilities:**
+    1.  **Data Definition:** Defines the `PacketInfo` struct. This is the **output** of the parsing process. It contains the essential L3/L4 information needed by the rule engine.
+    2.  **Parsing Logic:** Contains the `handle_packet()` function. This is the core of the module.
+
+* **Key Logic & Relationships:**
+    * `handle_packet` receives an `EthernetPacket` from the capture module.
+    * It performs a layered unwrapping:
+        * **L2:** Checks if the EtherType is `Ipv4`. If not, it stops and returns `None`.
+        * **L3:** If it's IPv4, it creates an `Ipv4Packet` view on the payload.
+        * **L4:** It checks the protocol inside the IPv4 packet. If it's `Tcp` or `Udp`, it creates the corresponding packet view. If it's anything else (like ICMP), it stops and returns `None`.
+    * If it successfully parses a TCP or UDP packet, it populates a `PacketInfo` struct with the IPs, ports, and protocol, and returns `Some(PacketInfo)`.
+    * The `#[derive(Debug, PartialEq)]` on `PacketInfo` is important. `Debug` allows you to print it for debugging, and `PartialEq` allows you to compare two `PacketInfo` structs, which is essential for the unit tests.
+
+---
+### **File: `rules.rs`**
+
+* **Purpose:** To define the structure of a detection rule and contain the logic for matching a rule against a parsed packet. This is the "brain" of the NIDS.
+
+* **Responsibilities:**
+    1.  **Rule Definition:** Defines the `Rule` struct. The `#[derive(Deserialize)]` attribute instructs the `serde` crate on how to create this struct from the `rules.yaml` file.
+    2.  **Matching Logic:** Contains the `matches()` method.
+
+* **Key Logic & Relationships:**
+    * The `Rule` struct uses `Option<T>` for fields like `source_ip` and `dest_port`. This is crucial because it allows a rule in the YAML file to omit a field. If a rule doesn't care about the source port, you simply don't include `source_port` in the YAML, and `serde` will correctly create the struct with `source_port: None`.
+    * The `matches()` method is the heart of the rule engine. It takes a reference to a `PacketInfo` (the output from the parser) and checks it against its own criteria. It's a chain of `if` conditions. If any condition fails (e.g., the rule specifies `protocol: "tcp"` but the packet is UDP), it returns `false` immediately. If the packet passes all the checks defined in the rule, the function returns `true`.
+
+---
+### **File: `rules.yaml`**
+
+* **Purpose:** An external configuration file that allows you to define detection logic without recompiling the program.
+
+* **Responsibilities:** To store a list of rules in a human-readable format.
+
+* **Key Logic & Relationships:**
+    * This file is pure data. It is the input for the `load_rules()` function in `main.rs`.
+    * The structure is critical. It is a YAML "sequence" (a list), where each item is a "mapping" (an object). The keys in the mapping (`msg`, `protocol`, `dest_ip`, etc.) **must** match the field names in the `Rule` struct in `rules.rs` for `serde` to work.
+
+---
+### **Overall Application Data Flow**
+
+1.  **Startup:** `main.rs` starts.
+2.  **Load:** `main.rs` calls `load_rules()`, which opens `rules.yaml`, passes the file handle to `serde_yaml`, and receives a `Vec<Rule>`.
+3.  **Initiate:** `main.rs` calls `start_capture()`, handing it the `rules` vector via a `move` closure.
+4.  **Capture:** `capture.rs`'s loop grabs a raw packet from the network.
+5.  **Callback:** `capture.rs` calls the closure defined in `main.rs`, passing it the `EthernetPacket`.
+6.  **Parse:** The closure calls `parser::handle_packet()`. The parser unwraps the layers and returns `Some(PacketInfo)` if it's a TCP or UDP packet.
+7.  **Analyze:** If the parser returned `Some(packet_info)`, the closure then iterates through its `rules` vector.
+8.  **Match:** For each `rule`, it calls `rule.matches(&packet_info)`.
+9.  **Alert:** If `matches()` returns `true`, the closure prints the alert message from the rule to the console.
+10. **Loop:** The process repeats from step 4 for the next packet.
+
+

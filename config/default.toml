@@ -1,0 +1,24 @@
+# Default Configuration File
+
+# Path to the stateless detection rules
+rules_file_path = "rules.yaml"
+
+# Default logging file
+# Option => "info", "warn", "debug", or "trace"
+log_level = "info"
+
+# The number of worker threads to spawn for packet analysis.
+# A good starting point is the number of CPU cores on your machine.
+worker_threads = 4
+
+# Configuration for stateful analysis
+port_scan_threshold = 15
+port_scan_window_secs = 10
+
+# --- Heuristic Analysis Config ---
+# The threshold in bytes for detecting potential data exfiltration. (e.g., 5MB)
+data_exfil_threshold_bytes = 5242880
+
+# A list of standard ports that are exempt from the data exfiltration check,
+# as they are expected to handle large data transfers.
+standard_ports = [80, 443, 8080]
