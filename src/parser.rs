@@ -1,3 +1,4 @@
+use httparse;
 use pnet_packet::ethernet::{EthernetPacket, EtherTypes};
 use pnet_packet::ip::IpNextHeaderProtocols;
 use pnet_packet::ipv4::Ipv4Packet;
@@ -11,8 +12,16 @@ use trust_dns_proto::rr::RecordType;
 /// Struct to hold parsed dns information
 #[derive(Debug, PartialEq, Clone)]
 pub struct DnsInfo {
-    pub query_name:String,
-    pub query_type:RecordType,
+    pub query_name: String,
+    pub query_type: RecordType,
+}
+
+/// Struct to hold parsed HTTP information
+#[derive(Debug, PartialEq, Clone)]
+pub struct HttpInfo {
+    pub method: String,
+    pub path: String,
+    pub host: String,
 }
 
 /// A struct to hold the relevant information extracted from a packet.
@@ -25,6 +34,7 @@ pub struct PacketInfo {
     pub dest_port: Option<u16>,
     pub protocol: String,
     pub dns_data: Option<DnsInfo>,
+    pub http_data: Option<HttpInfo>,
 }
 
 
@@ -43,6 +53,11 @@ pub fn handle_packet(ethernet_packet: &EthernetPacket) -> Option<PacketInfo> {
             match ipv4_packet.get_next_level_protocol() {
                 IpNextHeaderProtocols::Tcp => {
                     if let Some(tcp) = TcpPacket::new(ipv4_packet.payload()) {
+                        let http_data = if tcp.get_destination() == 80 {
+                            handle_http_packet(tcp.payload())
+                        } else {
+                            None
+                        };
 
                         return Some(PacketInfo {
                             source_ip,
@@ -51,6 +66,7 @@ pub fn handle_packet(ethernet_packet: &EthernetPacket) -> Option<PacketInfo> {
                             dest_port: Some(tcp.get_destination()),
                             protocol: "tcp".to_string(),
                             dns_data: None,
+                            http_data,
                         });
                     }
                 }
@@ -67,7 +83,8 @@ pub fn handle_packet(ethernet_packet: &EthernetPacket) -> Option<PacketInfo> {
                             source_port: Some(udp.get_source()),
                             dest_port: Some(udp.get_destination()),
                             protocol: "udp".to_string(),
-                            dns_data
+                            dns_data,
+                            http_data: None,
                         });
                     }
                 }
@@ -102,4 +119,33 @@ fn handle_dns_packet(payload: &[u8]) -> Option<DnsInfo> {
     None
 }
 
+// New function to parse the http payload
+fn handle_http_packet(payload: &[u8]) -> Option<HttpInfo> {
+    let mut headers = [httparse::EMPTY_HEADER; 64]; // httparse requires a slice of EMPTY_HEADER, 64 should be enough
+    let mut req = httparse::Request::new(&mut headers);
 
+    if let Ok(httparse::Status::Complete(_)) = req.parse(payload) {
+        let method = req.method.unwrap_or("").to_string();
+        let path = req.path.unwrap_or("").to_string();
+
+        // Find the host header
+        let mut host = "";
+        for header in req.headers.iter() {
+            if header.name.eq_ignore_ascii_case("Host") {
+                // We need to convert the byte slice to a string
+                host = std::str::from_utf8(header.value).unwrap_or("");
+                break;
+            }
+        }
+
+        if !method.is_empty() && !path.is_empty() && !host.is_empty() {
+            return Some(HttpInfo {
+                method,
+                path,
+                host: host.to_string(),
+            });
+        }
+    }
+
+    None
+}

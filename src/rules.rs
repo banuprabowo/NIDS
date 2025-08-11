@@ -1,4 +1,4 @@
-use crate::parser::{DnsInfo, PacketInfo};
+use crate::parser::{PacketInfo};
 use serde::Deserialize;
 use std::net::IpAddr;
 
@@ -17,6 +17,10 @@ pub struct Rule {
     pub dest_ip: Option<IpAddr>,
     pub dest_port: Option<u16>,
     pub dns_query: Option<String>,
+    // New HTTP fields
+    pub http_host: Option<String>,
+    pub http_uri: Option<String>,
+    pub http_method: Option<String>,
 }
 
 // Helper function for serde to provide a default value for `protocol`.
@@ -63,17 +67,45 @@ impl Rule {
         // 6. Check for DNS Query
         if let Some(rule_query) = &self.dns_query {
             // Check if the packet contain DNS data
-            if let Some(dns_info) = &packet.dns_data{
+            if let Some(dns_info) = &packet.dns_data {
                 // If the rule's query string is NOT a suffix of the packet's query, it's not a match.
                 // We use `ends_with` to match "google.com" against a query for "www.google.com".
                 if !dns_info.query_name.ends_with(rule_query) {
                     return false;
                 }
-            }else {
-                // The rule queries a DNS query, but this packet isn't DNS. No Match
+            } else {
+                // The rule specifies a DNS query, but this packet isn't DNS. No Match
                 return false;
             }
         }
+
+        // 7. Check for HTTP data. This entire block is only entered if the packet has HTTP data.
+        if let Some(http_info) = &packet.http_data {
+            // Check HTTP host
+            if let Some(rule_host) = &self.http_host {
+                if !http_info.host.ends_with(rule_host) {
+                    return false;
+                }
+            }
+            // Check HTTP URI
+            if let Some(rule_uri) = &self.http_uri {
+                if !http_info.path.contains(rule_uri) {
+                    return false;
+                }
+            }
+            // Check HTTP method
+            if let Some(rule_method) = &self.http_method {
+                if &http_info.method != rule_method {
+                    return false;
+                }
+            }
+        } else {
+            // This packet is not HTTP. If the rule has any HTTP criteria, it's a non-match.
+            if self.http_host.is_some() || self.http_uri.is_some() || self.http_method.is_some() {
+                return false;
+            }
+        }
+
 
         // If all checks passed, it's a match!
         true
@@ -85,6 +117,7 @@ impl Rule {
 #[cfg(test)]
 mod tests {
     use super::*; // Import Rule and PacketInfo.
+    use crate::parser::HttpInfo;
 
     // Helper function to quickly create a mock PacketInfo for our tests.
     fn mock_packet(
@@ -100,7 +133,8 @@ mod tests {
             source_port: Some(source_port),
             dest_port: Some(dest_port),
             protocol: protocol.to_string(),
-            dns_data: None
+            dns_data: None,
+            http_data: None,
         }
     }
 
@@ -117,6 +151,9 @@ mod tests {
             dest_ip: None,
             dest_port: Some(22),
             dns_query: None,
+            http_host: None,
+            http_uri: None,
+            http_method: None,
         };
         // ACT
         let result = rule.matches(&packet);
@@ -137,6 +174,9 @@ mod tests {
             dest_ip: None,
             dest_port: Some(22),
             dns_query: None,
+            http_host: None,
+            http_uri: None,
+            http_method: None,
         };
         // ACT
         let result = rule.matches(&packet);
@@ -157,6 +197,9 @@ mod tests {
             dest_ip: None,
             dest_port: None,
             dns_query: None,
+            http_host: None,
+            http_uri: None,
+            http_method: None,
         };
         // ACT
         let result = rule.matches(&packet);
@@ -177,10 +220,102 @@ mod tests {
             dest_ip: None,
             dest_port: Some(53),
             dns_query: None,
+            http_host: None,
+            http_uri: None,
+            http_method: None,
         };
         // ACT
         let result = rule.matches(&packet);
         // ASSERT
         assert!(!result, "Rule for UDP should not match a TCP packet");
+    }
+
+    #[test]
+    fn test_http_host_rule_match() {
+        // ARRANGE
+        let mut packet = mock_packet("192.168.1.10", "10.0.0.80", 12345, 80, "tcp");
+        packet.http_data = Some(HttpInfo {
+            method: "GET".to_string(),
+            path: "/login.php".to_string(),
+            host: "badsite.com".to_string(),
+        });
+
+        let rule = Rule {
+            action: "alert".to_string(),
+            msg: "Bad host detected".to_string(),
+            protocol: "tcp".to_string(),
+            source_ip: None,
+            source_port: None,
+            dest_ip: None,
+            dest_port: Some(80),
+            dns_query: None,
+            http_host: Some("badsite.com".to_string()),
+            http_uri: None,
+            http_method: None,
+        };
+
+        // ACT
+        let result = rule.matches(&packet);
+
+        // ASSERT
+        assert!(result, "Rule should match packet with specified HTTP host");
+    }
+
+    #[test]
+    fn test_http_rule_no_match_if_not_http() {
+        // ARRANGE
+        // This is a standard TCP packet to a different port, so it won't have http_data.
+        let packet = mock_packet("192.168.1.10", "10.0.0.80", 12345, 443, "tcp");
+
+        let rule = Rule {
+            action: "alert".to_string(),
+            msg: "Bad host detected".to_string(),
+            protocol: "tcp".to_string(),
+            source_ip: None,
+            source_port: None,
+            dest_ip: None,
+            dest_port: None,
+            dns_query: None,
+            http_host: Some("badsite.com".to_string()), // Rule requires HTTP
+            http_uri: None,
+            http_method: None,
+        };
+
+        // ACT
+        let result = rule.matches(&packet);
+
+        // ASSERT
+        assert!(!result, "HTTP rule should not match a non-HTTP packet");
+    }
+
+    #[test]
+    fn test_http_uri_rule_match() {
+        // ARRANGE
+        let mut packet = mock_packet("192.168.1.10", "10.0.0.80", 12345, 80, "tcp");
+        packet.http_data = Some(HttpInfo {
+            method: "GET".to_string(),
+            path: "/data/config.yml".to_string(),
+            host: "corp.internal".to_string(),
+        });
+
+        let rule = Rule {
+            action: "alert".to_string(),
+            msg: "Suspicious URI detected".to_string(),
+            protocol: "tcp".to_string(),
+            source_ip: None,
+            source_port: None,
+            dest_ip: None,
+            dest_port: Some(80),
+            dns_query: None,
+            http_host: None,
+            http_uri: Some("config.yml".to_string()), // Look for this substring
+            http_method: None,
+        };
+
+        // ACT
+        let result = rule.matches(&packet);
+
+        // ASSERT
+        assert!(result, "Rule should match packet with specified URI substring");
     }
 }

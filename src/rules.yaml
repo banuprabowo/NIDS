@@ -22,3 +22,10 @@
   protocol: udp
   dest_port: 53
   dns_query: "evil-c2-server.com"
+
+# --- New rule for Layer 7 HTTP content ---
+- action: alert
+  msg: "ALERT: HTTP request to suspicious .xyz domain"
+  protocol: tcp
+  dest_port: 80
+  http_host: ".xyz"
