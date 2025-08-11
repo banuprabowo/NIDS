@@ -53,12 +53,7 @@ pub fn handle_packet(ethernet_packet: &EthernetPacket) -> Option<PacketInfo> {
             match ipv4_packet.get_next_level_protocol() {
                 IpNextHeaderProtocols::Tcp => {
                     if let Some(tcp) = TcpPacket::new(ipv4_packet.payload()) {
-                        let http_data = if tcp.get_destination() == 80 {
-                            handle_http_packet(tcp.payload())
-                        } else {
-                            None
-                        };
-
+                        // Per-packet HTTP parsing is removed. This will be done in the reassembler.
                         return Some(PacketInfo {
                             source_ip,
                             dest_ip,
@@ -66,7 +61,7 @@ pub fn handle_packet(ethernet_packet: &EthernetPacket) -> Option<PacketInfo> {
                             dest_port: Some(tcp.get_destination()),
                             protocol: "tcp".to_string(),
                             dns_data: None,
-                            http_data,
+                            http_data: None,
                         });
                     }
                 }
@@ -119,14 +114,15 @@ fn handle_dns_packet(payload: &[u8]) -> Option<DnsInfo> {
     None
 }
 
-// New function to parse the http payload
-fn handle_http_packet(payload: &[u8]) -> Option<HttpInfo> {
+/// Parses a reassembled TCP stream to extract HTTP information.
+pub fn handle_http_stream(stream_data: &[u8]) -> Option<HttpInfo> {
     let mut headers = [httparse::EMPTY_HEADER; 64]; // httparse requires a slice of EMPTY_HEADER, 64 should be enough
     let mut req = httparse::Request::new(&mut headers);
 
-    if let Ok(httparse::Status::Complete(_)) = req.parse(payload) {
-        let method = req.method.unwrap_or("").to_string();
-        let path = req.path.unwrap_or("").to_string();
+    match req.parse(stream_data) {
+        Ok(httparse::Status::Complete(_)) => {
+            let method = req.method.unwrap_or("").to_string();
+            let path = req.path.unwrap_or("").to_string();
 
         // Find the host header
         let mut host = "";
@@ -138,12 +134,21 @@ fn handle_http_packet(payload: &[u8]) -> Option<HttpInfo> {
             }
         }
 
-        if !method.is_empty() && !path.is_empty() && !host.is_empty() {
-            return Some(HttpInfo {
-                method,
-                path,
-                host: host.to_string(),
-            });
+            if !method.is_empty() && !path.is_empty() && !host.is_empty() {
+                return Some(HttpInfo {
+                    method,
+                    path,
+                    host: host.to_string(),
+                });
+            }
+        }
+        Ok(httparse::Status::Partial) => {
+            // Request is incomplete, need more data.
+            return None;
+        }
+        Err(_) => {
+            // An error occurred during parsing.
+            return None;
         }
     }
 
