@@ -4,11 +4,11 @@ use std::fs::File;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use log::{info, warn, error, debug};
+use log::{info, warn, error};
 // use env_logger;
 
 use crossbeam_channel::{unbounded};
-use pnet_packet::{Packet, PacketSize};
+use pnet_packet::{Packet};
 use nids_v1::{handle_packet, list_devices, start_capture, Rule, ConnectionTracker, Settings};
 
 
