@@ -14,3 +14,4 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
 trust-dns-proto = "0.23.2"
 httparse = "1.8.0"
+smoltcp = { version = "0.12.0", features = ["proto-ipv4", "socket-tcp"] }
